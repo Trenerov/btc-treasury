@@ -2,14 +2,14 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
-import { config } from '../src/config.js';
-import { logger } from '../src/utils/logger.js';
-import { utxoRouter } from '../src/routes/utxo.js';
-import { consolidateRouter } from '../src/routes/consolidate.js';
-import { payoutRouter } from '../src/routes/payout.js';
-import { policyRouter } from '../src/routes/policy.js';
-import { deployRouter } from '../src/routes/deploy.js';
-import treasuryRouter from '../src/routes/treasury.js';
+import { config } from '../backend/src/config.js';
+import { logger } from '../backend/src/utils/logger.js';
+import { utxoRouter } from '../backend/src/routes/utxo.js';
+import { consolidateRouter } from '../backend/src/routes/consolidate.js';
+import { payoutRouter } from '../backend/src/routes/payout.js';
+import { policyRouter } from '../backend/src/routes/policy.js';
+import { deployRouter } from '../backend/src/routes/deploy.js';
+import treasuryRouter from '../backend/src/routes/treasury.js';
 
 let proxyAgent: ProxyAgent | undefined;
 if (config.proxyUrl) {
@@ -39,7 +39,7 @@ app.post('/api/opnet-rpc/api/v1/json-rpc', async (req, res) => {
 
         const data = await response.text();
         res.status(response.status).send(data);
-    } catch (err: any) {
+    } catch (err) {
         res.status(500).json({ error: 'Proxy failed to fetch from OP_NET' });
     }
 });
