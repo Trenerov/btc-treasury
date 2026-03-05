@@ -4,7 +4,8 @@ A high-performance, production-grade Bitcoin treasury management dashboard built
 
 Designed for DAOs and organizations, it provides a secure interface for batch payouts, automatic UTXO consolidation, and on-chain policy management with delegated PSBT signing.
 
-![BTC Treasury Dashboard Mockup](https://raw.githubusercontent.com/placeholder-repo/assets/main/dashboard-preview.png)
+![BTC Treasury Dashboard Mockup](assets/Dashboard.png)
+
 *(Replace with actual screenshot before public release)*
 
 ---
