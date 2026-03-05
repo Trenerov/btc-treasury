@@ -7,6 +7,7 @@ build/
 !contract/build/
 *.wasm
 !contract/build/*.wasm
+!contract/build/*.js
 *.abi.ts
 *.d.ts
 out/

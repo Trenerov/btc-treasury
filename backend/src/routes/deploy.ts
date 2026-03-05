@@ -64,7 +64,7 @@ deployRouter.post('/broadcast', async (req: Request, res: Response) => {
 // GET /api/deploy/params - returns WASM bytecode for native OP_WALLET deployment
 deployRouter.get('/params', async (req: Request, res: Response) => {
     try {
-        const wasmPath = path.join(process.cwd(), '..', 'contract', 'build', 'PolicyVault.wasm');
+        const wasmPath = path.join(process.cwd(), 'contract', 'build', 'PolicyVault.wasm');
         const bytecode = readFileSync(wasmPath);
 
         res.json({
