@@ -4,7 +4,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "cd frontend && npm install && npm run build"
+        "build": "cd frontend && npm install && npm run build && mv dist ../public"
     },
     "dependencies": {
         "@btc-vision/bitcoin": "latest",
