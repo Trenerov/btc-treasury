@@ -5,6 +5,7 @@ node_modules/
 dist/
 build/
 *.wasm
+!contract/build/*.wasm
 *.abi.ts
 *.d.ts
 out/
