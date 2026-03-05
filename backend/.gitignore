@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+*.log
+debug_*.ts
+debug_output.txt
+package-lock.json

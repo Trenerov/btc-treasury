@@ -1,0 +1,47 @@
+{
+    "targets": {
+        "release": {
+            "outFile": "build/PolicyVault.wasm",
+            "optimizeLevel": 3,
+            "shrinkLevel": 1,
+            "converge": true,
+            "noAssert": false,
+            "runtime": "stub",
+            "initialMemory": 1,
+            "maximumMemory": 512,
+            "bindings": "esm",
+            "exportStart": "start"
+        },
+        "debug": {
+            "outFile": "build/PolicyVault.wasm",
+            "optimizeLevel": 0,
+            "shrinkLevel": 0,
+            "converge": false,
+            "noAssert": false,
+            "runtime": "stub",
+            "initialMemory": 1,
+            "maximumMemory": 512,
+            "bindings": "esm",
+            "debug": true,
+            "exportStart": "start"
+        }
+    },
+    "options": {
+        "transform": [
+            "@btc-vision/opnet-transform"
+        ],
+        "sourceMap": false,
+        "enable": [
+            "sign-extension",
+            "mutable-globals",
+            "nontrapping-f2i",
+            "bulk-memory",
+            "simd",
+            "reference-types",
+            "multi-value"
+        ],
+        "use": [
+            "abort=assembly/index/abort"
+        ]
+    }
+}
