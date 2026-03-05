@@ -4,6 +4,7 @@ node_modules/
 # Build artifacts
 dist/
 build/
+!contract/build/
 *.wasm
 !contract/build/*.wasm
 *.abi.ts
