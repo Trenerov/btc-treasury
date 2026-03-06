@@ -167,56 +167,102 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
         let txId: string | null = null;
         const ws = walletService.getState();
 
-        // Strategy 0: OP_WALLET native transfer (same pattern as deployContract)
+        // Strategy 0: OP_WALLET native interaction (signAndBroadcastInteraction / signInteraction)
         if (ws.type === 'opnet') {
           const opnet = (window as any).opnet;
-          console.info('[Deposit] OP_WALLET detected. Available methods:',
+          console.info('[Deposit] OP_WALLET detected. Methods:',
             Object.getOwnPropertyNames(opnet).filter((k: string) => typeof opnet[k] === 'function'));
 
-          // Try OP_WALLET's native sendBitcoin / transfer methods first
-          const nativeMethods = ['sendBitcoin', 'transfer', 'sendTransfer', 'send'];
-          for (const method of nativeMethods) {
-            if (typeof opnet[method] === 'function') {
+          // Fetch UTXOs from OP_WALLET
+          depBtn.textContent = '⌛ Fetching UTXOs...';
+          let utxos: any[] = [];
+          try { utxos = await opnet.getBitcoinUtxos(); } catch (e: any) {
+            console.warn('[Deposit] getBitcoinUtxos failed:', e.message);
+          }
+
+          if (utxos.length > 0) {
+            const fixedUtxos = utxos.map((u: any) => ({ ...u, value: BigInt(u.value) }));
+            // Select enough UTXOs for deposit + fee buffer
+            const needed = BigInt(sats) + 50000n;
+            fixedUtxos.sort((a: any, b: any) => (a.value < b.value ? -1 : 1));
+            let accumulated = 0n;
+            const selectedUtxos: any[] = [];
+            for (const u of fixedUtxos) {
+              selectedUtxos.push(u);
+              accumulated += u.value;
+              if (accumulated >= needed) break;
+            }
+            console.info(`[Deposit] Selected ${selectedUtxos.length}/${fixedUtxos.length} UTXOs, total: ${accumulated}`);
+
+            // Try signAndBroadcastInteraction (one-step sign + broadcast)
+            if (!txId && typeof opnet.signAndBroadcastInteraction === 'function') {
+              depBtn.textContent = '⌛ Confirm in OP_WALLET...';
+              showToast('Check your OP_WALLET — confirm the deposit', 'info');
+
+              const paramVariations = [
+                { to: treasuryAddr, utxos: selectedUtxos, sats: BigInt(sats), feeRate: 10, priorityFee: 1000n },
+                { to: treasuryAddr, from: walletAddr, utxos: selectedUtxos, sats: BigInt(sats), feeRate: 10, priorityFee: 1000n, calldata: new Uint8Array(0) },
+                { to: treasuryAddr, utxos: selectedUtxos, amount: BigInt(sats), feeRate: 10, priorityFee: 1000n },
+              ];
+
+              for (const params of paramVariations) {
+                try {
+                  console.info('[Deposit] Trying signAndBroadcastInteraction:', Object.keys(params));
+                  const result = await opnet.signAndBroadcastInteraction(params);
+                  console.info('[Deposit] signAndBroadcastInteraction result:', result);
+                  if (result) {
+                    txId = typeof result === 'string' ? result :
+                      result.txId || result.transactionId || result.result ||
+                      (Array.isArray(result.transaction) ? result.transaction[0] : null);
+                    if (txId) break;
+                  }
+                } catch (e: any) {
+                  const msg = (e.message || '').toLowerCase();
+                  if (msg.includes('reject') || msg.includes('cancel')) throw e;
+                  console.warn('[Deposit] signAndBroadcastInteraction failed:', e.message, e);
+                }
+              }
+            }
+
+            // Try signInteraction + broadcast separately
+            if (!txId && typeof opnet.signInteraction === 'function') {
+              depBtn.textContent = '⌛ Confirm in OP_WALLET...';
               try {
-                console.info(`[Deposit] Trying opnet.${method}...`);
-                depBtn.textContent = '⌛ Confirm in OP_WALLET...';
-                txId = await opnet[method](treasuryAddr, sats);
-                if (txId) break;
+                console.info('[Deposit] Trying signInteraction...');
+                const signResult = await opnet.signInteraction({
+                  to: treasuryAddr,
+                  utxos: selectedUtxos,
+                  sats: BigInt(sats),
+                  feeRate: 10,
+                  priorityFee: 1000n,
+                });
+                console.info('[Deposit] signInteraction result:', signResult);
+
+                if (signResult) {
+                  depBtn.textContent = '⌛ Broadcasting...';
+                  const txArray: string[] = signResult.transaction || [];
+                  if (txArray.length > 0 && typeof opnet.broadcast === 'function') {
+                    for (const rawTx of txArray) {
+                      const bResult = await opnet.broadcast(rawTx);
+                      console.info('[Deposit] broadcast result:', bResult);
+                      if (!txId) txId = typeof bResult === 'string' ? bResult : bResult?.txId || bResult?.result;
+                    }
+                  } else if (txArray.length > 0) {
+                    const result = await broadcastFunding(txArray[0]);
+                    txId = result.txId;
+                  }
+                }
               } catch (e: any) {
                 const msg = (e.message || '').toLowerCase();
                 if (msg.includes('reject') || msg.includes('cancel')) throw e;
-                console.warn(`[Deposit] opnet.${method} failed:`, e.message);
+                console.warn('[Deposit] signInteraction failed:', e.message, e);
               }
-            }
-          }
-
-          // Try OP_WALLET interaction-style call (like deployContract but for transfer)
-          if (!txId && typeof opnet.signPsbt === 'function') {
-            try {
-              console.info('[Deposit] Trying opnet.signPsbt directly...');
-              depBtn.textContent = '⌛ Building PSBT...';
-              const walletUtxos = await walletService.getUtxos();
-              const { psbtHex } = await fetchFundingPSBT(
-                walletAddr, pubKey, treasuryAddr, sats.toString(), walletUtxos
-              );
-              depBtn.textContent = '⌛ Confirm in OP_WALLET...';
-              const signed = await opnet.signPsbt(psbtHex, { autoFinalized: false });
-              if (signed) {
-                depBtn.textContent = '⌛ Broadcasting...';
-                const result = await broadcastFunding(signed);
-                txId = result.txId;
-              }
-            } catch (e: any) {
-              const msg = (e.message || '').toLowerCase();
-              if (msg.includes('reject') || msg.includes('cancel')) throw e;
-              console.warn('[Deposit] opnet.signPsbt direct failed:', e.message);
             }
           }
         }
 
-        // Strategy 1: PSBT approach (backend builds, wallet signs via aggressive loop)
+        // Strategy 1: PSBT approach (for Unisat and other standard wallets)
         if (!txId) {
-          let psbtError: string | null = null;
           try {
             console.info('[Deposit] Trying PSBT approach...');
             depBtn.textContent = '⌛ Building PSBT...';
@@ -234,14 +280,11 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
             const result = await broadcastFunding(signedPsbt);
             txId = result.txId;
           } catch (psbtErr: any) {
-            psbtError = psbtErr.message || String(psbtErr);
-            console.warn('[Deposit] PSBT approach failed:', psbtError);
+            console.warn('[Deposit] PSBT approach failed:', psbtErr.message);
 
-            // Strategy 2: Wallet native sendBitcoin
+            // Strategy 2: Wallet native sendBitcoin (last resort)
             try {
-              console.info('[Deposit] Falling back to sendBitcoin...');
               depBtn.textContent = '⌛ Confirm in wallet...';
-              showToast(`PSBT failed (${psbtError}), trying direct send...`, 'info');
               txId = await walletService.sendBitcoin(treasuryAddr, sats);
             } catch (sendErr: any) {
               console.warn('[Deposit] sendBitcoin also failed:', sendErr.message);
