@@ -166,6 +166,7 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
 
         // Strategy 1: PSBT approach (backend builds, wallet signs)
         let txId: string | null = null;
+        let psbtError: string | null = null;
         try {
           console.info('[Deposit] Trying PSBT approach...');
           const walletUtxos = await walletService.getUtxos();
@@ -182,14 +183,20 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
           const result = await broadcastFunding(signedPsbt);
           txId = result.txId;
         } catch (psbtErr: any) {
-          console.warn('[Deposit] PSBT approach failed:', psbtErr.message);
+          psbtError = psbtErr.message || String(psbtErr);
+          console.warn('[Deposit] PSBT approach failed:', psbtError);
 
           // Strategy 2: Wallet native sendBitcoin (wallet handles UTXOs internally)
-          console.info('[Deposit] Falling back to sendBitcoin...');
-          depBtn.textContent = '⌛ Confirm in wallet...';
-          showToast('PSBT failed, trying direct send...', 'info');
-
-          txId = await walletService.sendBitcoin(treasuryAddr, sats);
+          try {
+            console.info('[Deposit] Falling back to sendBitcoin...');
+            depBtn.textContent = '⌛ Confirm in wallet...';
+            showToast(`PSBT failed (${psbtError}), trying direct send...`, 'info');
+            txId = await walletService.sendBitcoin(treasuryAddr, sats);
+          } catch (sendErr: any) {
+            console.warn('[Deposit] sendBitcoin also failed:', sendErr.message);
+            // Both strategies failed — show manual deposit UI
+            throw new Error('AUTO_DEPOSIT_FAILED');
+          }
         }
 
         if (txId) {
@@ -203,7 +210,44 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
         setTimeout(() => renderOverview(container), 10000);
       } catch (err: any) {
         console.error('[Deposit] All methods failed:', err);
-        showToast(`Deposit failed: ${err.message || 'Unknown error'}`, 'error');
+
+        if (err.message === 'AUTO_DEPOSIT_FAILED') {
+          // Show manual deposit dialog instead of a generic error
+          const treasuryAddr = data.address;
+          showToast('Auto-deposit unavailable. Use the manual address below.', 'info');
+          const manualDiv = document.createElement('div');
+          manualDiv.className = 'card';
+          manualDiv.style.cssText = 'margin-top:16px; padding:24px; text-align:center; border:1px solid var(--accent-primary);';
+          manualDiv.innerHTML = `
+            <div style="font-size:32px; margin-bottom:8px;">📋</div>
+            <h3 style="margin-bottom:8px;">Send BTC manually to this treasury address:</h3>
+            <div class="mono" style="background:var(--bg-tertiary); padding:12px; border-radius:8px; word-break:break-all; cursor:pointer; margin-bottom:12px;" id="manual-deposit-addr">
+              ${treasuryAddr}
+            </div>
+            <button class="btn btn-primary btn-sm" id="btn-copy-deposit-addr">Copy Address</button>
+            <button class="btn btn-secondary btn-sm" id="btn-close-manual" style="margin-left:8px;">Close</button>
+          `;
+          // Insert after the deposit button's parent area
+          const headerActions = depBtn.closest('.header-actions') || depBtn.parentElement;
+          if (headerActions) {
+            headerActions.parentElement?.appendChild(manualDiv);
+          } else {
+            container.appendChild(manualDiv);
+          }
+          document.getElementById('btn-copy-deposit-addr')?.addEventListener('click', () => {
+            navigator.clipboard.writeText(treasuryAddr);
+            showToast('Treasury address copied!', 'success');
+          });
+          document.getElementById('manual-deposit-addr')?.addEventListener('click', () => {
+            navigator.clipboard.writeText(treasuryAddr);
+            showToast('Treasury address copied!', 'success');
+          });
+          document.getElementById('btn-close-manual')?.addEventListener('click', () => {
+            manualDiv.remove();
+          });
+        } else {
+          showToast(`Deposit failed: ${err.message || 'Unknown error'}`, 'error');
+        }
       } finally {
         if (depBtn) {
           depBtn.textContent = '💎 Add Treasury';
