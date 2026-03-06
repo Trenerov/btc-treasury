@@ -164,38 +164,89 @@ export async function renderOverview(container: HTMLElement): Promise<void> {
 
         if (!walletAddr || !pubKey) throw new Error('Wallet details missing');
 
-        // Strategy 1: PSBT approach (backend builds, wallet signs)
         let txId: string | null = null;
-        let psbtError: string | null = null;
-        try {
-          console.info('[Deposit] Trying PSBT approach...');
-          const walletUtxos = await walletService.getUtxos();
-          console.info(`[Deposit] Wallet UTXOs: ${walletUtxos.length}`, walletUtxos);
+        const ws = walletService.getState();
 
-          const { psbtHex } = await fetchFundingPSBT(
-            walletAddr, pubKey, treasuryAddr, sats.toString(), walletUtxos
-          );
+        // Strategy 0: OP_WALLET native transfer (same pattern as deployContract)
+        if (ws.type === 'opnet') {
+          const opnet = (window as any).opnet;
+          console.info('[Deposit] OP_WALLET detected. Available methods:',
+            Object.getOwnPropertyNames(opnet).filter((k: string) => typeof opnet[k] === 'function'));
 
-          depBtn.textContent = '⌛ Waiting for wallet...';
-          const signedPsbt = await walletService.signPsbt(psbtHex);
+          // Try OP_WALLET's native sendBitcoin / transfer methods first
+          const nativeMethods = ['sendBitcoin', 'transfer', 'sendTransfer', 'send'];
+          for (const method of nativeMethods) {
+            if (typeof opnet[method] === 'function') {
+              try {
+                console.info(`[Deposit] Trying opnet.${method}...`);
+                depBtn.textContent = '⌛ Confirm in OP_WALLET...';
+                txId = await opnet[method](treasuryAddr, sats);
+                if (txId) break;
+              } catch (e: any) {
+                const msg = (e.message || '').toLowerCase();
+                if (msg.includes('reject') || msg.includes('cancel')) throw e;
+                console.warn(`[Deposit] opnet.${method} failed:`, e.message);
+              }
+            }
+          }
 
-          depBtn.textContent = '⌛ Broadcasting...';
-          const result = await broadcastFunding(signedPsbt);
-          txId = result.txId;
-        } catch (psbtErr: any) {
-          psbtError = psbtErr.message || String(psbtErr);
-          console.warn('[Deposit] PSBT approach failed:', psbtError);
+          // Try OP_WALLET interaction-style call (like deployContract but for transfer)
+          if (!txId && typeof opnet.signPsbt === 'function') {
+            try {
+              console.info('[Deposit] Trying opnet.signPsbt directly...');
+              depBtn.textContent = '⌛ Building PSBT...';
+              const walletUtxos = await walletService.getUtxos();
+              const { psbtHex } = await fetchFundingPSBT(
+                walletAddr, pubKey, treasuryAddr, sats.toString(), walletUtxos
+              );
+              depBtn.textContent = '⌛ Confirm in OP_WALLET...';
+              const signed = await opnet.signPsbt(psbtHex, { autoFinalized: false });
+              if (signed) {
+                depBtn.textContent = '⌛ Broadcasting...';
+                const result = await broadcastFunding(signed);
+                txId = result.txId;
+              }
+            } catch (e: any) {
+              const msg = (e.message || '').toLowerCase();
+              if (msg.includes('reject') || msg.includes('cancel')) throw e;
+              console.warn('[Deposit] opnet.signPsbt direct failed:', e.message);
+            }
+          }
+        }
 
-          // Strategy 2: Wallet native sendBitcoin (wallet handles UTXOs internally)
+        // Strategy 1: PSBT approach (backend builds, wallet signs via aggressive loop)
+        if (!txId) {
+          let psbtError: string | null = null;
           try {
-            console.info('[Deposit] Falling back to sendBitcoin...');
-            depBtn.textContent = '⌛ Confirm in wallet...';
-            showToast(`PSBT failed (${psbtError}), trying direct send...`, 'info');
-            txId = await walletService.sendBitcoin(treasuryAddr, sats);
-          } catch (sendErr: any) {
-            console.warn('[Deposit] sendBitcoin also failed:', sendErr.message);
-            // Both strategies failed — show manual deposit UI
-            throw new Error('AUTO_DEPOSIT_FAILED');
+            console.info('[Deposit] Trying PSBT approach...');
+            depBtn.textContent = '⌛ Building PSBT...';
+            const walletUtxos = await walletService.getUtxos();
+            console.info(`[Deposit] Wallet UTXOs: ${walletUtxos.length}`, walletUtxos);
+
+            const { psbtHex } = await fetchFundingPSBT(
+              walletAddr, pubKey, treasuryAddr, sats.toString(), walletUtxos
+            );
+
+            depBtn.textContent = '⌛ Waiting for wallet...';
+            const signedPsbt = await walletService.signPsbt(psbtHex);
+
+            depBtn.textContent = '⌛ Broadcasting...';
+            const result = await broadcastFunding(signedPsbt);
+            txId = result.txId;
+          } catch (psbtErr: any) {
+            psbtError = psbtErr.message || String(psbtErr);
+            console.warn('[Deposit] PSBT approach failed:', psbtError);
+
+            // Strategy 2: Wallet native sendBitcoin
+            try {
+              console.info('[Deposit] Falling back to sendBitcoin...');
+              depBtn.textContent = '⌛ Confirm in wallet...';
+              showToast(`PSBT failed (${psbtError}), trying direct send...`, 'info');
+              txId = await walletService.sendBitcoin(treasuryAddr, sats);
+            } catch (sendErr: any) {
+              console.warn('[Deposit] sendBitcoin also failed:', sendErr.message);
+              throw new Error('AUTO_DEPOSIT_FAILED');
+            }
           }
         }
 

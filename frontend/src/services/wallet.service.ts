@@ -256,11 +256,10 @@ class WalletService {
     }
 
     /**
-     * Aggressive PSBT signing loop.
-     * Tries every wallet, every method name, every parameter format.
+     * PSBT signing with toSignInputs support and error logging.
      */
     public async signPsbt(psbt: string): Promise<string> {
-        console.info('--- STARTING AGGRESSIVE SIGNING LOOP ---');
+        console.info('--- STARTING PSBT SIGNING ---');
         if (!psbt) throw new Error('No PSBT provided');
 
         const input = psbt.trim();
@@ -270,19 +269,45 @@ class WalletService {
 
         // Detect input format: hex starts with PSBT magic 70736274, base64 starts with cHNid
         if (input.toLowerCase().startsWith('70736274')) {
-            // Input is hex
             psbtHex = input;
             const bytes = new Uint8Array(psbtHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
             psbtBase64 = btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join(''));
         } else {
-            // Input is base64 (or at least not hex PSBT)
             psbtBase64 = input;
             const binaryStr = atob(input);
             psbtHex = Array.from(binaryStr).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
         }
 
-        // 1. Gather ALL possible wallet objects
-        const targets: any[] = [
+        const signerAddress = this.state.address || '';
+
+        // Build toSignInputs for indices 0-9 (wallets ignore extra indices)
+        const toSignInputs = Array.from({ length: 10 }, (_, i) => ({
+            index: i,
+            address: signerAddress,
+        }));
+
+        const errors: string[] = [];
+
+        const trySign = async (fn: Function, ctx: any, data: string, opts?: any, label?: string): Promise<string | null> => {
+            try {
+                const result = await fn.call(ctx, data, opts);
+                if (result) return result;
+            } catch (e: any) {
+                const msg = e.message || String(e);
+                if (msg.toLowerCase().includes('reject') || msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('denied')) {
+                    throw e; // User rejected — stop immediately
+                }
+                const errorDetail = `${label}: ${msg}`;
+                errors.push(errorDetail);
+                console.warn(`[signPsbt] ${errorDetail}`);
+            }
+            return null;
+        };
+
+        // 1. Gather wallet objects — preferred wallet first
+        const preferred = this.getProvider(this.state.type as WalletType);
+        const allTargets: any[] = [
+            preferred,
             (window as any).unisat,
             (window as any).opnet?.bitcoin,
             (window as any).opnet?.btc,
@@ -290,72 +315,77 @@ class WalletService {
             (window as any).opnet_web3,
             (window as any).okxwallet?.bitcoin,
             (window as any).okxwallet,
-            (window as any).XverseProviders?.BitcoinProvider, // Xverse
+            (window as any).XverseProviders?.BitcoinProvider,
             (window as any).btc,
             (window as any).bitcoin,
-            window.ethereum // Last resort (MetaMask/Backpack stub)
         ].filter(t => !!t && typeof t === 'object');
 
-        const uniqueTargets = Array.from(new Set(targets));
-        console.info(`Found ${uniqueTargets.length} potential signer objects.`);
+        const uniqueTargets = Array.from(new Set(allTargets));
+        console.info(`[signPsbt] ${uniqueTargets.length} signer objects, wallet type: ${this.state.type}, address: ${signerAddress}`);
 
         const methodNames = ['signPsbt', 'signPSBT', 'signPsbtHex', 'signPSBTHex', 'signTransaction', 'signPsbtBuffer'];
 
         for (const target of uniqueTargets) {
-            const keys = Object.keys(target);
-            console.info(`Target keys:`, keys);
+            const keys = Object.getOwnPropertyNames(target).concat(Object.getOwnPropertyNames(Object.getPrototypeOf(target) || {}));
+            console.info(`[signPsbt] Target methods:`, keys.filter(k => typeof target[k] === 'function'));
 
-            // A) Try Native Functions
             for (const name of methodNames) {
                 const fn = target[name];
-                if (typeof fn === 'function') {
-                    console.info(`Attempting target[${name}]...`);
-                    try {
-                        // Priority 1: Hex + options
-                        try { return await fn.call(target, psbtHex, { autoFinalized: false }); } catch (e) { }
-                        // Priority 2: Hex positional
-                        try { return await fn.call(target, psbtHex, false); } catch (e) { }
-                        // Priority 3: Base64 + options
-                        try { return await fn.call(target, psbtBase64, { autoFinalized: false }); } catch (e) { }
-                        // Priority 4: Base64 positional
-                        try { return await fn.call(target, psbtBase64, false); } catch (e) { }
-                        // Priority 5: Just Hex
-                        try { return await fn.call(target, psbtHex); } catch (e) { }
-                        // Priority 6: Just Base64
-                        try { return await fn.call(target, psbtBase64); } catch (e) { }
-                    } catch (err: any) {
-                        const msg = (err.message || String(err)).toLowerCase();
-                        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('denied')) throw err;
-                        console.warn(`Method ${name} failed on target:`, err.message || err);
-                    }
-                }
+                if (typeof fn !== 'function') continue;
+                console.info(`[signPsbt] Trying ${name}...`);
+
+                let r: string | null;
+                // 1. Hex + toSignInputs (most wallets need this)
+                r = await trySign(fn, target, psbtHex, { autoFinalized: false, toSignInputs }, `${name}(hex+toSignInputs)`);
+                if (r) return r;
+                // 2. Hex + simple options
+                r = await trySign(fn, target, psbtHex, { autoFinalized: false }, `${name}(hex+opts)`);
+                if (r) return r;
+                // 3. Base64 + toSignInputs
+                r = await trySign(fn, target, psbtBase64, { autoFinalized: false, toSignInputs }, `${name}(b64+toSignInputs)`);
+                if (r) return r;
+                // 4. Base64 + simple options
+                r = await trySign(fn, target, psbtBase64, { autoFinalized: false }, `${name}(b64+opts)`);
+                if (r) return r;
+                // 5. Just hex
+                r = await trySign(fn, target, psbtHex, undefined, `${name}(hex)`);
+                if (r) return r;
+                // 6. Just base64
+                r = await trySign(fn, target, psbtBase64, undefined, `${name}(b64)`);
+                if (r) return r;
             }
 
-            // B) Try RPC Style (request)
+            // RPC style
             if (typeof target.request === 'function') {
-                const rpcMethods = ['btc_signPsbt', 'signPsbt', 'btc_signPSBT', 'signTransaction'];
-                for (const rpcMethod of rpcMethods) {
-                    console.info(`Attempting RPC request[${rpcMethod}]...`);
+                for (const rpcMethod of ['btc_signPsbt', 'signPsbt', 'btc_signPSBT', 'signTransaction']) {
                     try {
-                        // Variation 1: hex in array
-                        try { return await target.request({ method: rpcMethod, params: [psbtHex, { autoFinalized: false }] }); } catch (e) { }
-                        // Variation 2: hex in object
-                        try { return await target.request({ method: rpcMethod, params: { psbtHex, autoFinalized: false } }); } catch (e) { }
-                        // Variation 3: data property
-                        try { return await target.request({ method: rpcMethod, params: { data: psbtHex, autoFinalized: false } }); } catch (e) { }
-                        // Variation 4: Base64
-                        try { return await target.request({ method: rpcMethod, params: [psbtBase64, { autoFinalized: false }] }); } catch (e) { }
-                        // Variation 5: Simple Hex
-                        try { return await target.request({ method: rpcMethod, params: [psbtHex] }); } catch (e) { }
-                    } catch (err: any) {
-                        const msg = (err.message || String(err)).toLowerCase();
-                        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('denied')) throw err;
+                        const result = await target.request({ method: rpcMethod, params: [psbtHex, { autoFinalized: false, toSignInputs }] });
+                        if (result) return result;
+                    } catch (e: any) {
+                        const msg = (e.message || String(e)).toLowerCase();
+                        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('denied')) throw e;
+                        errors.push(`rpc:${rpcMethod}: ${e.message || e}`);
+                    }
+                    try {
+                        const result = await target.request({ method: rpcMethod, params: [psbtBase64, { autoFinalized: false, toSignInputs }] });
+                        if (result) return result;
+                    } catch (e: any) {
+                        const msg = (e.message || String(e)).toLowerCase();
+                        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('denied')) throw e;
+                    }
+                    try {
+                        const result = await target.request({ method: rpcMethod, params: [psbtHex] });
+                        if (result) return result;
+                    } catch (e: any) {
+                        const msg = (e.message || String(e)).toLowerCase();
+                        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('denied')) throw e;
                     }
                 }
             }
         }
 
-        throw new Error('FAILED: No wallet responded to PSBT signature requests. Please use Unisat or ensure OP_WALLET has "Unisat Compatibility" enabled.');
+        console.error('[signPsbt] All attempts failed. Errors:', errors);
+        throw new Error(`Wallet signing failed. Errors: ${errors.slice(0, 3).join('; ')}`);
     }
 
     /**
