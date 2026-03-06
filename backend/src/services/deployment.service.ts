@@ -22,7 +22,7 @@ export class DeploymentService {
      */
     public async generateDeploymentPSBTs(walletAddress: string, publicKeyHex: string) {
         const provider = getProvider();
-        const wasmPath = path.join(process.cwd(), '..', 'contract', 'build', 'PolicyVault.wasm');
+        const wasmPath = path.join(process.cwd(), 'contract', 'build', 'PolicyVault.wasm');
 
         logger.info(`Generating deployment PSBTs for address: ${walletAddress}`);
 
